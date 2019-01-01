@@ -21,10 +21,11 @@ suite = {
     },
 
     "libraries" : {
-
         "JBGENERATOR" : {
-            "path" : "lib/jbgenerator.jar",
-            "sha1" : "a3a7c0b7609d7bae06489ed321027f6e4bd81c68",
+            "urls" : [
+                "https://github.com/jku-ssw/java-bytecode-generator/releases/download/v1.0.0/jbgenerator-1.0.0.jar"
+            ],
+            "sha1" : "50f69012583984849c5e5c5cd7ec85cd3653b85a",
         },
     },
 
