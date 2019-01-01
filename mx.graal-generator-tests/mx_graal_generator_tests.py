@@ -8,7 +8,7 @@ def compile_generated(args=None):
     """verify compiler using generated classes"""
     vmargs = mx.get_runtime_jvm_args(['CGEN'])
 
-    run_java(vmargs + ['-XX:-UseJVMCIClassLoader'] + ["at.jku.ssw.java.bytecode.generator.tests.CompileGeneratedClasses"] + args)
+    run_java(vmargs + ['-XX:-UseJVMCIClassLoader'] + ["at.jku.ssw.java.bytecode.generator.tests.GraalGeneratorTest"] + args)
 
 mx.update_commands(_suite, {
     'cgen' : [compile_generated, '[args...]']
