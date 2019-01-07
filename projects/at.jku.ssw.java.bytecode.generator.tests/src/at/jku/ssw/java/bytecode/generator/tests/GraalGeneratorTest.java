@@ -9,12 +9,15 @@ import at.jku.ssw.java.bytecode.generator.tests.runtime.OptimizedRunner;
 import at.jku.ssw.java.bytecode.generator.tests.utils.StaticFieldGuard;
 import jdk.vm.ci.hotspot.HotSpotCodeCacheProvider;
 import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
+import org.apache.commons.cli.*;
 import org.graalvm.compiler.hotspot.HotSpotGraalCompiler;
 import org.graalvm.compiler.hotspot.HotSpotGraalRuntimeProvider;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -66,6 +69,12 @@ public class GraalGeneratorTest implements Comparing {
      */
     private final HotSpotGraalCompiler compiler;
 
+    /**
+     * The threshold to get a suitable amount of information to produce
+     * optimized results during the optimized compilation step.
+     */
+    private final int optimizationThreshold;
+
     // endregion
     //-------------------------------------------------------------------------
     // region Initialization
@@ -73,19 +82,21 @@ public class GraalGeneratorTest implements Comparing {
     /**
      * Creates a new Graal tester.
      *
-     * @param outDir   The directory where the generated classes
-     *                 should be stored in
-     * @param runtime  The runtime reference
-     * @param compiler The Graal compiler reference
+     * @param outDir                The directory where the generated classes
+     *                              should be stored in
+     * @param runtime               The runtime reference
+     * @param compiler              The Graal compiler reference
+     * @param optimizationThreshold The test runs to execute to get optimization information
      */
     private GraalGeneratorTest(String outDir,
                                HotSpotJVMCIRuntime runtime,
-                               HotSpotGraalCompiler compiler) {
+                               HotSpotGraalCompiler compiler,
+                               int optimizationThreshold) {
         this.workingDirectory = Paths.get(outDir);
         this.runtime = runtime;
         this.compiler = compiler;
+        this.optimizationThreshold = optimizationThreshold;
     }
-
 
     // endregion
     //-------------------------------------------------------------------------
@@ -132,7 +143,7 @@ public class GraalGeneratorTest implements Comparing {
                 guard,
                 runtime,
                 this.compiler,
-                OPTIMIZATION_THRESHOLD
+                optimizationThreshold
         );
 
         // optimization
@@ -167,9 +178,42 @@ public class GraalGeneratorTest implements Comparing {
         HotSpotCodeCacheProvider codeCache = graalRuntime.getHostProviders().getCodeCache();
         logger.info("Runtime initialized");
 
-        if (args.length == 0) {
-            // if no arguments are provided,
-            // compile and compare the sample classes
+        int repetitions;
+        int optimizationThreshold;
+
+        Options commandLineOptions = getCommandLineOptions();
+        CommandLine commandLine = getCommandLine(commandLineOptions, args);
+
+        if (commandLine.hasOption("help")) {
+            // only show the help dialog if this argument is passed
+            printCommandLineHelp(commandLineOptions);
+            return;
+        }
+
+        repetitions = Optional
+                .ofNullable(commandLine.getParsedOptionValue("r"))
+                .map(Number.class::cast)
+                .map(Number::intValue)
+                .orElse(REPETITIONS);
+
+        if (repetitions <= 0)
+            throw new IllegalArgumentException("The number of repetitions must be greater than 0");
+
+        optimizationThreshold = Optional
+                .ofNullable(commandLine.getParsedOptionValue("o"))
+                .map(Number.class::cast)
+                .map(Number::intValue)
+                .orElse(OPTIMIZATION_THRESHOLD);
+
+        if (optimizationThreshold < 0)
+            throw new IllegalArgumentException("The optimization threshold must at least be 0");
+
+        // the remaining arguments are potential class files
+        String[] classFiles = commandLine.getArgs();
+
+        if (classFiles.length == 0) {
+            // if no more arguments are provided,
+            // generate, compile and compare the sample classes
 
             final Path outDir = Paths.get(OUTDIR);
 
@@ -180,38 +224,108 @@ public class GraalGeneratorTest implements Comparing {
                 throw new IllegalArgumentException(outDir + " does not denote a valid directory");
 
 
-            for (int i = 0; i < REPETITIONS; i++) {
-
-                // iterate over all class generation parameters
-                new ClassFileGenerator(outDir, REPETITIONS).forEach(name -> {
-                    GraalGeneratorTest cgb = new GraalGeneratorTest(
-                            OUTDIR,
-                            jvmciRuntime,
-                            compiler
-                    );
-
-                    try {
-                        cgb.testGraalCompilerForClass(name);
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                });
-            }
-        } else {
-            // otherwise do the same with the given class files
-            for (String name : args) {
-                codeCache.resetCompilationStatistics();
+            // iterate over all class generation parameters
+            new ClassFileGenerator(outDir, repetitions).forEach(name -> {
                 GraalGeneratorTest cgb = new GraalGeneratorTest(
-                        ".",
+                        OUTDIR,
                         jvmciRuntime,
-                        compiler
+                        compiler,
+                        optimizationThreshold
                 );
 
-                logger.log(Level.WARNING, name + " - Initialization");
+                try {
+                    cgb.testGraalCompilerForClass(name);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        } else {
+            // otherwise do the same with the given class files
+            Arrays.stream(classFiles)
+                    // strip possible ".class" extensions
+                    .map(f -> f.endsWith(".class")
+                            ? f.substring(0, f.length() - 6)
+                            : f)
+                    .forEach(className -> {
+                        codeCache.resetCompilationStatistics();
+                        GraalGeneratorTest cgb = new GraalGeneratorTest(
+                                ".",
+                                jvmciRuntime,
+                                compiler,
+                                optimizationThreshold
+                        );
 
-                cgb.testGraalCompilerForClass(name);
-            }
+                        logger.log(Level.WARNING, className + " - Initialization");
+
+                        try {
+                            cgb.testGraalCompilerForClass(className);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    });
         }
+    }
+
+    // endregion
+    //-------------------------------------------------------------------------
+    // region CLI utilities
+
+    /**
+     * Static helper that defines the allowed command line options.
+     *
+     * @return the individual command line options that this application
+     * supports
+     */
+    private static Options getCommandLineOptions() {
+        return new Options()
+                .addOption(
+                        Option.builder("r")
+                                .longOpt("repetitions")
+                                .desc("The number of times each class template should be generated")
+                                .hasArg(true)
+                                .required(false)
+                                .type(Number.class)
+                                .build()
+                )
+                .addOption(
+                        Option.builder("o")
+                                .longOpt("optimization-threshold")
+                                .desc("The number of times a class should be run before compiling it with optimization information")
+                                .hasArg(true)
+                                .required(false)
+                                .type(Number.class)
+                                .build()
+                )
+                .addOption(
+                        Option.builder("h")
+                                .longOpt("help")
+                                .desc("Shows the command line overview")
+                                .hasArg(false)
+                                .required(false)
+                                .build()
+                );
+    }
+
+    /**
+     * Parses the command line arguments and generates a wrapper to
+     * simplify checking for individual values.
+     *
+     * @param options The command line options that are defined for this application
+     * @param args    The arguments that were given to the program
+     * @return a command line instance
+     */
+    private static CommandLine getCommandLine(Options options, String[] args) throws ParseException {
+        return new DefaultParser().parse(options, args);
+    }
+
+    /**
+     * Shows an overview of all supported command line arguments and their
+     * usage.
+     *
+     * @param options The command line options that should be printed
+     */
+    private static void printCommandLineHelp(Options options) {
+        new HelpFormatter().printHelp("graal_generator_tests", options, true);
     }
 
     // endregion
